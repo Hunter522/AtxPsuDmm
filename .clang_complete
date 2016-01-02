@@ -1,0 +1,4 @@
+-I/home/hunter522/Applications/arduino/hardware/arduino/avr/cores/arduino
+-I/home/hunter522/Applications/arduino/libraries
+-I/home/hunter522/Development/Arduino/AtxPsuDmm/lib/LedControl/src
+
