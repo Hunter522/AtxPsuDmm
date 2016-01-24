@@ -28,7 +28,7 @@
  *
  *       http://busyducks.com/ascii-art-arduinos
  *
- * \author Hunter N. Morgan (hunter.nelson.morgan@gmail.com)
+ *   \author Hunter N. Morgan (hunter.nelson.morgan@gmail.com)
  */
 
 #include <Arduino.h>
@@ -41,13 +41,23 @@
 #define MOSI_PIN 11	   // SPI MOSI pin
 #define SS_PIN 10          // SPI SS pin
 #define SCK_PIN 13         // SPI SCK pin
+#define VOLT_SCALE 60.0f   // voltage scaler for calculating true voltage
+#define CURRENT_SCALE 0.20f// current scaler for calculating true current
 
-#define DEBUG
+//#define VERBOSE
 
-#ifdef DEBUG
+#ifdef VERBOSE
  #define LOG(x) Serial.print(x)
-#endif // DEBUG
+ #define LOGLN(x) Serial.println(x)
+#else
+ #define LOG(x)
+ #define LOGLN(x) 
+#endif // VERBOSE
 
+// Global variables
+short sampleCtr = 0;
+int voltSample = 0;
+int shuntVoltSample = 0;
 LedControl display = LedControl(MOSI_PIN, SCK_PIN, SS_PIN, 1);
 
 /**
@@ -55,29 +65,29 @@ LedControl display = LedControl(MOSI_PIN, SCK_PIN, SS_PIN, 1);
  *
  *  e.g. 12.450 ---> _ _ 1 2.4 5
  * 
- *  \param f the floating point num to display
+ *  \param val the floating point num to display
+ *  \param offset the offset in number of digits to start displaying at (use 4 to display on 2nd line)
  */
-void displayFloat(const float val) {
+void displayFloat(const float val, const int offset) {
     char str[32];
-    const int valLen = sprintf(str, "%.2f", val);
+    const int valLen = strlen(dtostrf(val, 4, 2, str)); // use avr libc's dtostrf since sprtintf doesn't support %f...
 
-    if(valLen > 0 && valLen <= 4) {
-	// clear display first
-	display.clearDisplay(DISPLAY_ADDRESS);
-    
+    if(valLen > 0 && valLen <= 5) {    
 	// start off at right-most digit,  walking through string backwards and setting
 	// the corresponding digit on the display
-	int digit = 3;
+	int digit = offset;
 	int valInt = 0;
+	bool setDecimal = false;
 	for(int i = valLen-1; i >= 0; i--) {
 	    // set digit on display
 	    // if '.' then set display decimal visible
 	    if(str[i] == '.') {
-		display.setDigit(DISPLAY_ADDRESS, digit, (byte) valInt, true);
+		setDecimal = true;
 	    } else {
 		valInt = str[i] - '0'; // convert char to int
-		display.setDigit(DISPLAY_ADDRESS, digit, (byte) valInt, false);
-		digit--;	    
+		display.setDigit(DISPLAY_ADDRESS, digit, (byte) valInt, setDecimal);
+		digit++;
+		setDecimal = false;
 	    }
 	}
     }
@@ -86,33 +96,47 @@ void displayFloat(const float val) {
 void setup() {
     // initialize the MAX72XX chip
     display.shutdown(DISPLAY_ADDRESS, false);  // turns display on since chip is in power savings mode on boot
-    display.setIntensity(DISPLAY_ADDRESS, 8);  // set reasonable brightness
+    display.setIntensity(DISPLAY_ADDRESS, 1);  // set reasonable brightness
     display.clearDisplay(DISPLAY_ADDRESS);
+    
+#ifdef VERBOSE    
+    Serial.begin(9600);    
+#endif // VERBOSE
 }
 
 void loop() {
-    // VOLTMETER
-    // read analog pin value n times and average it
-    int voltSample = 0;
-    for (int i = 0; i < SAMPLE_CNT; i++) {
-	voltSample += analogRead(VOLT_AIN_PIN);
-    }
-    const float voltAvg = (float)voltSample / (float)SAMPLE_CNT;
-    LOG("Voltage: ");
-    LOG(voltAvg);
-    displayFloat(voltAvg);
 
-    
-    // AMMETER
-    // read analog pin value n times and average it
-    int currentSample = 0;
-    for (int i = 0; i < SAMPLE_CNT; i++) {
-	currentSample += analogRead(VOLT_AIN_PIN);
+    // read samples and average them
+    voltSample += analogRead(VOLT_AIN_PIN);
+    shuntVoltSample += analogRead(AMP_AIN_PIN);
+
+    // only display after taking n samples, this way the display doens't jump around too much
+    if(sampleCtr == SAMPLE_CNT-1) {
+	display.clearDisplay(DISPLAY_ADDRESS);
+	
+	const float voltAvg = (float)voltSample / (float)SAMPLE_CNT;
+	const float scaledVoltAvg = VOLT_SCALE * (voltAvg / 1023.0f);
+	voltSample = 0;
+	LOG("voltAvg: ");
+	LOGLN(voltAvg);
+	displayFloat(scaledVoltAvg, 0);
+
+	// calculate current using Ohm's law, I = V/R
+	// R_shunt = 0.1
+	// current is measured from analog input
+	// analog signal is sourced from a AD623 op-amp which has a gain of aprox. 5
+	// so that we can get aprox 1mA resolution (otherwise we'd get only 5mA resolution)
+	// assuming we are using a 10-bit ADC and only care about max current of 10.0A
+	const float shuntVoltAvg = (float)shuntVoltSample / (float)SAMPLE_CNT;
+	const float scaledCurrentAvg = (CURRENT_SCALE * (5.0f * (shuntVoltAvg / 1023.0f))) / 0.1f;
+	shuntVoltSample = 0;
+	LOG("shuntVoltAvg: ");
+	LOGLN(shuntVoltAvg);
+	displayFloat(scaledCurrentAvg, 4);
     }
-    const float currentAvg = (float)currentSample / (float)SAMPLE_CNT;
-    LOG("Current: ");
-    LOG(currentAvg);
-    displayFloat(currentAvg);
+
+    sampleCtr = (sampleCtr + 1) % SAMPLE_CNT;
+    delay(33); // 30 Hz
 }
 
 
