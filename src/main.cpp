@@ -35,7 +35,7 @@
 #include "LedControl.h"
 
 #define DISPLAY_ADDRESS 0  // SPI address of MAX72XX chip
-#define SAMPLE_CNT 5       // number of samples to read from analog input
+#define SAMPLE_CNT 250     // number of samples to read from analog input
 #define VOLT_AIN_PIN A0    // analog in pin for measuring voltage
 #define AMP_AIN_PIN A1     // analog in pin for measuring current
 #define MOSI_PIN 11	   // SPI MOSI pin
@@ -55,9 +55,6 @@
 #endif // VERBOSE
 
 // Global variables
-short sampleCtr = 0;
-int voltSample = 0;
-int shuntVoltSample = 0;
 LedControl display = LedControl(MOSI_PIN, SCK_PIN, SS_PIN, 1);
 
 /**
@@ -93,10 +90,49 @@ void displayFloat(const float val, const int offset) {
     }
 }
 
+/**
+ *  \brief Performs an analog read using a median-filter method
+ *
+ *  \param pin the analog pin to read from
+ *  \param numSamples the number of samples to use when reading (100 is good)
+ *  \return the filtered anlog value [0, 1023] 
+ */
+float analogReadMedianFiltered(const int pin, const int numSamples) {
+    // read multiple values and sort them to take the mode
+    int sortedValues[numSamples];
+    for(int i = 0; i < numSamples; i++) {
+	int value = analogRead(pin);
+	int j;
+	if(value < sortedValues[0] || i == 0) {
+	    j = 0; //insert at first position
+	}
+	else{
+	    for(j = 1; j < i; j++) {
+		if(sortedValues[j-1]<=value && sortedValues[j]>=value){
+		    // j is insert position
+		    break;
+		}
+	    }
+	}
+	for(int k = i; k > j; k--) {
+	    // move all values higher than current reading up one position
+	    sortedValues[k] = sortedValues[k-1];
+	}
+	sortedValues[j] = value; //insert current reading
+    }
+    //return scaled mode of 10 values
+    float returnval = 0;
+    for(int i = numSamples/2-5; i < (numSamples/2+5); i++) {
+	returnval += sortedValues[i];
+    }
+    returnval = returnval/10;
+    return returnval;
+}
+
 void setup() {
     // initialize the MAX72XX chip
     display.shutdown(DISPLAY_ADDRESS, false);  // turns display on since chip is in power savings mode on boot
-    display.setIntensity(DISPLAY_ADDRESS, 1);  // set reasonable brightness
+    display.setIntensity(DISPLAY_ADDRESS, 5);  // set reasonable brightness
     display.clearDisplay(DISPLAY_ADDRESS);
     
 #ifdef VERBOSE    
@@ -106,37 +142,27 @@ void setup() {
 
 void loop() {
 
-    // read samples and average them
-    voltSample += analogRead(VOLT_AIN_PIN);
-    shuntVoltSample += analogRead(AMP_AIN_PIN);
+    // read analog values from voltage and current pins using a median filter method
+    const float voltAvg = analogReadMedianFiltered(VOLT_AIN_PIN, SAMPLE_CNT);
+    const float scaledVoltAvg = VOLT_SCALE * (voltAvg / 1023.0f);
+    LOG("voltAvg: ");
+    LOGLN(voltAvg);
 
-    // only display after taking n samples, this way the display doens't jump around too much
-    if(sampleCtr == SAMPLE_CNT-1) {
-	display.clearDisplay(DISPLAY_ADDRESS);
-	
-	const float voltAvg = (float)voltSample / (float)SAMPLE_CNT;
-	const float scaledVoltAvg = VOLT_SCALE * (voltAvg / 1023.0f);
-	voltSample = 0;
-	LOG("voltAvg: ");
-	LOGLN(voltAvg);
-	displayFloat(scaledVoltAvg, 0);
-
-	// calculate current using Ohm's law, I = V/R
-	// R_shunt = 0.1
-	// current is measured from analog input
-	// analog signal is sourced from a AD623 op-amp which has a gain of aprox. 5
-	// so that we can get aprox 1mA resolution (otherwise we'd get only 5mA resolution)
-	// assuming we are using a 10-bit ADC and only care about max current of 10.0A
-	const float shuntVoltAvg = (float)shuntVoltSample / (float)SAMPLE_CNT;
-	const float scaledCurrentAvg = (CURRENT_SCALE * (5.0f * (shuntVoltAvg / 1023.0f))) / 0.1f;
-	shuntVoltSample = 0;
-	LOG("shuntVoltAvg: ");
-	LOGLN(shuntVoltAvg);
-	displayFloat(scaledCurrentAvg, 4);
-    }
-
-    sampleCtr = (sampleCtr + 1) % SAMPLE_CNT;
-    delay(33); // 30 Hz
+    // calculate current using Ohm's law, I = V/R
+    // R_shunt = 0.1
+    // current is measured from analog input
+    // analog signal is sourced from a AD623 op-amp which has a gain of aprox. 5
+    // so that we can get aprox 1mA resolution (otherwise we'd get only 5mA resolution)
+    // assuming we are using a 10-bit ADC and only care about max current of 10.0A
+    const float shuntVoltAvg = analogReadMedianFiltered(AMP_AIN_PIN, SAMPLE_CNT);
+    const float scaledCurrentAvg = (CURRENT_SCALE * (5.0f * (shuntVoltAvg / 1023.0f))) / 0.1f;
+    LOG("shuntVoltAvg: ");
+    LOGLN(shuntVoltAvg);
+    
+    // display the values
+    display.clearDisplay(DISPLAY_ADDRESS);
+    displayFloat(scaledVoltAvg, 0);
+    displayFloat(scaledCurrentAvg, 4);
 }
 
 
